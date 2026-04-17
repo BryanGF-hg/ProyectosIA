@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<title>Batch OCR → JSON / CSV</title>
+
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+
+<style>
+header{display:flex;}
+header label{padding-left:192px;}
+body{font-family:system-ui,Arial,sans-serif;background:#0f172a;color:#e5e7eb;padding:2rem}
+#contenedor{display:flex;flex-wrap:wrap}
+#dropzone{width:40%;border:2px dashed #38bdf8;border-radius:12px;padding:40px;text-align:center;background:#020617;cursor:pointer;margin-bottom:20px}
+#dropzone.dragover{background:#082f49}
+#contenedor-imagen{display:flex;}
+#botones button{width:45%;}
+button{border:0}
+button,select{background:#38bdf8;padding:10px 16px;border-radius:8px;cursor:pointer;margin:6px 6px 6px 0;font-size:14px}
+button:disabled{opacity:.5;cursor:not-allowed}
+pre,select{background:#020617}
+select{color:#e5e7eb;border:1px solid #38bdf8}
+pre{width:43%;padding:15px;border-radius:8px;white-space:pre-wrap;max-height:300px;overflow:auto}
+.error{color:#f87171}
+.ok{color:#4ade80}
+
+#imgContainer{width:40%;height:300px;display:flex;align-items:center;justify-content:center;background:#020617;border-radius:10px;overflow:hidden}
+#imgViewer{max-width:100%;max-height:100%;object-fit:contain}
+</style>
+</head>
+
+<header>
+<h1>OCR por lotes → JSON / CSV</h1>
+
+<label>
+  Idioma OCR:
+  <select id="language">
+    <option value="eng">English</option>
+    <option value="spa">Español</option>
+  </select>
+</label>
+<div id="botones">
+  <button id="copyBtn">📋 Copiar JSON</button>
+  <button id="downloadJsonBtn">⬇ Descargar JSON</button>
+  <button id="downloadCsvBtn">⬇ Descargar CSV</button>
+  <button id="validateDuplicatesBtn">🔍 Validar duplicados</button>
+</div>
+</header>
+
+<div id="contenedor">
+    <div id="dropzone">
+    Arrastra imágenes o carpetas aquí<br><br>
+    <input type="file" id="fileInput" multiple accept="image/*" hidden>
+    <button onclick="fileInput.click()">Seleccionar imágenes</button>
+    </div>
+
+    <div style="padding-left:50px;width:52%;padding-bottom: 18px;">
+    <h3>Imagen</h3>
+    <div id="contenedor-imagen">
+     <button id="prevImg">⬅</button>
+     <div id="imgContainer">
+       <img id="imgViewer">
+     </div>
+     <button id="nextImg">➡</button><br><br>       
+     </div>
+
+    </div>
+
+</div>
+
+    <h3>Estado: </h3>
+    <div id="status"></div>
+
+    <h3>Resultado JSON</h3>
+    <pre id="output"></pre>
+
+
+
+
+<script>
+const fileInput = document.getElementById("fileInput");
+const dropzone = document.getElementById("dropzone");
+const statusEl = document.getElementById("status");
+const outputEl = document.getElementById("output");
+
+const copyBtn = document.getElementById("copyBtn");
+const downloadJsonBtn = document.getElementById("downloadJsonBtn");
+const downloadCsvBtn = document.getElementById("downloadCsvBtn");
+const languageSelect = document.getElementById("language");
+
+let results = [];
+let images = [];
+let currentImageIndex = 0;
+
+/* ---------- SESSION STORAGE ---------- */
+
+function saveSession() {
+  sessionStorage.setItem("ocrResults", JSON.stringify(results));
+  sessionStorage.setItem("ocrLang", languageSelect.value);
+}
+
+function loadSession() {
+  const saved = sessionStorage.getItem("ocrResults");
+  const lang = sessionStorage.getItem("ocrLang");
+
+  if (lang) languageSelect.value = lang;
+
+  if (saved) {
+    results = JSON.parse(saved);
+    renderResults();
+  }
+}
+
+loadSession();
+
+/* ---------- DRAG & DROP ---------- */
+
+dropzone.addEventListener("dragover", e => {
+  e.preventDefault();
+  dropzone.classList.add("dragover");
+});
+
+dropzone.addEventListener("dragleave", () => {
+  dropzone.classList.remove("dragover");
+});
+
+dropzone.addEventListener("drop", e => {
+  e.preventDefault();
+  dropzone.classList.remove("dragover");
+  handleFiles(e.dataTransfer.files);
+});
+
+fileInput.addEventListener("change", e => handleFiles(e.target.files));
+
+/* ---------- CORE ---------- */
+
+async function handleFiles(fileList) {
+  results = [];
+  images = [];
+  currentImageIndex = 0;
+
+  statusEl.innerHTML = "";
+  outputEl.innerHTML = "";
+
+  const files = [...fileList].filter(f => f.type.startsWith("image/"));
+
+  for (const file of files) {
+    images.push(URL.createObjectURL(file));
+    await ocrImage(file);
+  }
+
+  showImage();
+  renderResults();
+}
+
+async function ocrImage(file) {
+  const row = document.createElement("div");
+  row.textContent = `⏳ ${file.name}`;
+  statusEl.appendChild(row);
+
+  const { data } = await Tesseract.recognize(
+    file,
+    languageSelect.value,
+    {
+      logger: m => {
+        if (m.status === "recognizing text") {
+          row.textContent = `📖 ${file.name} (${Math.round(m.progress * 100)}%)`;
+        }
+      }
+    }
+  );
+
+
+  const parsed = parseText(data.text);
+  results.push(...parsed);
+  row.textContent = `✅ ${file.name}`;
+}
+
+function showImage() {
+  const img = document.getElementById("imgViewer");
+  if (!images.length) {
+    img.style.display = "none";
+    return;
+  }
+  img.src = images[currentImageIndex];
+  img.style.display = "block";
+}
+
+document.getElementById("prevImg").onclick = () => {
+  if (currentImageIndex > 0) {
+    currentImageIndex--;
+    showImage();
+  }
+};
+
+document.getElementById("nextImg").onclick = () => {
+  if (currentImageIndex < images.length - 1) {
+    currentImageIndex++;
+    showImage();
+  }
+};
+
+/* ---------- PARSE ---------- */
+
+function parseText(text) {
+  // Normalizar espacios
+  const clean = text
+    .replace(/\r/g, " ")
+    .replace(/\n/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  let section = "";
+
+  // Detectar sección general
+  if (/artist\s*house/i.test(clean)) section = "ARTIST HOUSE";
+  if (/no\s*comercial/i.test(clean)) section = "NO COMERCIAL";
+  if (/zona\s*\+?18/i.test(clean)) section = "ARTIST HOUSE";
+
+  const entries = [];
+
+  /**
+   * Regex CLAVE:
+   * - captura un número
+   * - captura todo el texto hasta el siguiente número
+   */
+  const regex = /(\d+)\s+([^0-9]+?)(?=\s+\d+|$)/g;
+
+  let match;
+  while ((match = regex.exec(clean)) !== null) {
+    const stand = parseInt(match[1], 10);
+    let artist = match[2].trim();
+
+    // Ignorar encabezados colados
+    if (/artist\s*house|no\s*comercial|zona/i.test(artist)) continue;
+
+    // Marcar NSFW
+    if (/zona\s*\+?18/i.test(clean)) {
+      artist = "NSFW - " + artist;
+    }
+
+    entries.push({
+      artist,
+      stand,
+      note: section
+    });
+  }
+
+  return entries;
+}
+
+function extract(text, regex) {
+  const m = text.match(regex);
+  return m ? m[1].trim() : "";
+}
+
+function cleanText(text) {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+function renderResults() {
+  outputEl.innerHTML = "";
+
+  results.forEach((item, index) => {
+    const block = document.createElement("div");
+    block.style.marginBottom = "10px";
+
+    ["artist", "stand", "note"].forEach(field => {
+      const line = document.createElement("div");
+
+      const key = document.createElement("span");
+      key.textContent = `"${field}": `;
+      key.style.color = "#38bdf8";
+
+      const value = document.createElement("span");
+      value.textContent = JSON.stringify(item[field] || "");
+      value.style.cursor = "pointer";
+      value.dataset.index = index;
+      value.dataset.field = field;
+
+      // ✅ inline edit
+      value.onclick = () => startInlineEdit(value);
+
+      line.appendChild(key);
+      line.appendChild(value);
+      block.appendChild(line);
+    });
+
+    outputEl.appendChild(block);
+  });
+
+  saveSession();
+}
+
+function highlightDuplicates(duplicateStands, duplicateArtists) {
+  outputEl.innerHTML = "";
+
+  results.forEach((item, index) => {
+    const block = document.createElement("div");
+    block.style.marginBottom = "10px";
+
+    const isStandDuplicate = duplicateStands.has(item.stand);
+    const isArtistDuplicate = duplicateArtists.has(item.artist);
+
+    ["artist", "stand", "note"].forEach(field => {
+      const line = document.createElement("div");
+
+      const key = document.createElement("span");
+      key.textContent = `"${field}": `;
+      key.style.color = "#38bdf8";
+
+      const value = document.createElement("span");
+      value.textContent = JSON.stringify(item[field] || "");
+      value.style.cursor = "pointer";
+      value.dataset.index = index;
+      value.dataset.field = field;
+
+      // ✅ mantener edición inline
+      value.onclick = () => startInlineEdit(value);
+
+      // ✅ marcar duplicados visualmente
+      if (
+        (field === "stand" && isStandDuplicate) ||
+        (field === "artist" && isArtistDuplicate)
+      ) {
+        value.style.color = "#f87171";
+        value.title = "Duplicado detectado";
+      }
+
+      line.appendChild(key);
+      line.appendChild(value);
+      block.appendChild(line);
+    });
+
+    outputEl.appendChild(block);
+  });
+}
+
+
+function startInlineEdit(span) {
+  const index = span.dataset.index;
+  const field = span.dataset.field;
+  const oldValue = results[index][field] || "";
+
+  const input = document.createElement("input");
+  input.value = oldValue;
+  input.style.width = "90%";
+  input.style.background = "#020617";
+  input.style.color = "#e5e7eb";
+  input.style.border = "1px solid #38bdf8";
+  input.style.borderRadius = "6px";
+
+  span.replaceWith(input);
+  input.focus();
+
+  input.onkeydown = e => {
+    if (e.key === "Enter") finishEdit();
+    if (e.key === "Escape") cancelEdit();
+  };
+
+  input.onblur = finishEdit;
+
+  function finishEdit() {
+    results[index][field] = input.value.trim();
+    renderResults();
+  }
+
+  function cancelEdit() {
+    renderResults();
+  }
+}
+
+function disableActions(disabled) {
+  copyBtn.disabled = disabled;
+  downloadJsonBtn.disabled = disabled;
+  downloadCsvBtn.disabled = disabled;
+}
+
+/* ---------- EXPORT ---------- */
+
+copyBtn.onclick = async () => {
+  await navigator.clipboard.writeText(JSON.stringify(results, null, 2));
+};
+
+downloadJsonBtn.onclick = () =>
+  download("ocr.json", JSON.stringify(results, null, 2), "application/json");
+
+downloadCsvBtn.onclick = () =>
+  download("ocr.csv", toCSV(results), "text/csv");
+
+function toCSV(data) {
+  const headers = ["artist", "stand", "note"];
+  const rows = data.map(r =>
+    headers.map(h => `"${(r[h] || "").replace(/"/g, '""')}"`).join(",")
+  );
+  return headers.join(",") + "\n" + rows.join("\n");
+}
+
+function download(name, content, type) {
+  const blob = new Blob([content], { type });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+/* ------------------ VALIDATE ---------------- */
+const validateDuplicatesBtn = document.getElementById("validateDuplicatesBtn");
+
+validateDuplicatesBtn.onclick = () => {
+  const standMap = {};
+  const artistMap = {};
+  const duplicateStands = new Set();
+  const duplicateArtists = new Set();
+
+  results.forEach((item, index) => {
+    // Validar stand duplicado
+    if (standMap[item.stand] !== undefined) {
+      duplicateStands.add(item.stand);
+    } else {
+      standMap[item.stand] = index;
+    }
+
+    // Validar artista duplicado (normalizado)
+    const artistKey = item.artist.toLowerCase().trim();
+    if (artistMap[artistKey] !== undefined) {
+      duplicateArtists.add(item.artist);
+    } else {
+      artistMap[artistKey] = index;
+    }
+  });
+
+  highlightDuplicates(duplicateStands, duplicateArtists);
+};
+</script>
+
+</body>
+</html>

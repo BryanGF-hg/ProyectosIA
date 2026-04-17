@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<title>Batch OCR → JSON / CSV</title>
+
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+
+<style>
+body {
+  font-family: system-ui, Arial, sans-serif;
+  background: #0f172a;
+  color: #e5e7eb;
+  padding: 2rem;
+}
+
+#dropzone {
+  border: 2px dashed #38bdf8;
+  border-radius: 12px;
+  padding: 40px;
+  text-align: center;
+  background: #020617;
+  cursor: pointer;
+  margin-bottom: 20px;
+}
+
+#dropzone.dragover {
+  background: #082f49;
+}
+
+button, select {
+  background: #38bdf8;
+  border: none;
+  padding: 10px 16px;
+  border-radius: 8px;
+  cursor: pointer;
+  margin: 6px 6px 6px 0;
+  font-size: 14px;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+select {
+  background: #020617;
+  color: #e5e7eb;
+  border: 1px solid #38bdf8;
+}
+
+pre {
+  background: #020617;
+  padding: 15px;
+  border-radius: 8px;
+  white-space: pre-wrap;
+  max-height: 300px;
+  overflow: auto;
+}
+</style>
+</head>
+
+<body>
+
+<h1>OCR por lotes → JSON / CSV</h1>
+
+<label>
+  Idioma OCR:
+  <select id="language">
+    <option value="eng">English</option>
+    <option value="spa">Español</option>
+    <option value="eng+spa">English + Español</option>
+  </select>
+</label>
+
+<div id="dropzone">
+  Arrastra imágenes o carpetas aquí<br><br>
+  <input type="file" id="fileInput" multiple accept="image/*" hidden>
+  <button onclick="fileInput.click()">Seleccionar imágenes</button>
+</div>
+
+<h3>Estado</h3>
+<div id="status"></div>
+
+<h3>Resultado JSON</h3>
+<pre id="output"></pre>
+
+<button id="copyBtn" disabled>📋 Copiar JSON</button>
+<button id="downloadJsonBtn" disabled>⬇ Descargar JSON</button>
+<button id="downloadCsvBtn" disabled>⬇ Descargar CSV</button>
+
+<script>
+const dropzone = document.getElementById("dropzone");
+const fileInput = document.getElementById("fileInput");
+const statusEl = document.getElementById("status");
+const outputEl = document.getElementById("output");
+
+const copyBtn = document.getElementById("copyBtn");
+const downloadJsonBtn = document.getElementById("downloadJsonBtn");
+const downloadCsvBtn = document.getElementById("downloadCsvBtn");
+
+const languageSelect = document.getElementById("language");
+
+let results = [];
+
+/* ---------- DRAG & DROP ---------- */
+
+dropzone.addEventListener("dragover", e => {
+  e.preventDefault();
+  dropzone.classList.add("dragover");
+});
+
+dropzone.addEventListener("dragleave", () => {
+  dropzone.classList.remove("dragover");
+});
+
+dropzone.addEventListener("drop", e => {
+  e.preventDefault();
+  dropzone.classList.remove("dragover");
+  handleFiles(e.dataTransfer.files);
+});
+
+fileInput.addEventListener("change", e => handleFiles(e.target.files));
+
+/* ---------- CORE ---------- */
+
+async function handleFiles(fileList) {
+  results = [];
+  statusEl.innerHTML = "";
+  outputEl.textContent = "";
+
+  copyBtn.disabled = true;
+  downloadJsonBtn.disabled = true;
+  downloadCsvBtn.disabled = true;
+
+  const files = [...fileList].filter(f => f.type.startsWith("image/"));
+  if (!files.length) return;
+
+  for (const file of files) {
+    await ocrImage(file);
+  }
+
+  outputEl.textContent = JSON.stringify(results, null, 2);
+  copyBtn.disabled = false;
+  downloadJsonBtn.disabled = false;
+  downloadCsvBtn.disabled = false;
+}
+
+/* ---------- OCR ---------- */
+
+async function ocrImage(file) {
+  const lang = languageSelect.value;
+
+  const row = document.createElement("div");
+  row.textContent = `⏳ ${file.name}`;
+  statusEl.appendChild(row);
+
+  const { data } = await Tesseract.recognize(
+    file,
+    lang,
+    {
+      logger: m => {
+        if (m.status === "recognizing text") {
+          row.textContent = `📖 ${file.name} (${Math.round(m.progress * 100)}%)`;
+        }
+      }
+    }
+  );
+
+  results.push(parseText(data.text));
+  row.textContent = `✅ ${file.name}`;
+}
+
+/* ---------- TEXTO → JSON ---------- */
+
+function parseText(text) {
+  return {
+    artist: extract(text, /artist\s*[:\-]\s*(.+)/i),
+    stand: extract(text, /stand\s*[:\-]\s*(.+)/i),
+    note: extract(text, /note\s*[:\-]\s*(.+)/i) || text.trim()
+  };
+}
+
+function extract(text, regex) {
+  const m = text.match(regex);
+  return m ? m[1].trim() : "";
+}
+
+/* ---------- COPIAR JSON ---------- */
+
+copyBtn.onclick = async () => {
+  await navigator.clipboard.writeText(
+    JSON.stringify(results, null, 2)
+  );
+  copyBtn.textContent = "✅ Copiado";
+  setTimeout(() => copyBtn.textContent = "📋 Copiar JSON", 1500);
+};
+
+/* ---------- DESCARGAR JSON ---------- */
+
+downloadJsonBtn.onclick = () => {
+  downloadFile(
+    JSON.stringify(results, null, 2),
+    "ocr.json",
+    "application/json"
+  );
+};
+
+/* ---------- DESCARGAR CSV ---------- */
+
+downloadCsvBtn.onclick = () => {
+  const csv = toCSV(results);
+  downloadFile(csv, "ocr.csv", "text/csv");
+};
+
+function toCSV(data) {
+  const headers = ["artist", "stand", "note"];
+  const rows = data.map(row =>
+    headers.map(h => csvEscape(row[h] || "")).join(",")
+  );
+  return headers.join(",") + "\n" + rows.join("\n");
+}
+
+function csvEscape(value) {
+  return `"${String(value).replace(/"/g, '""')}"`;
+}
+
+/* ---------- UTIL ---------- */
+
+function downloadFile(content, filename, type) {
+  const blob = new Blob([content], { type });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+</script>
+
+</body>
+</html>
