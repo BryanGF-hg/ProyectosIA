@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Bike Builder – Final + LocalStorage</title>
+
+<style>
+* { box-sizing: border-box; font-family: Arial, sans-serif; }
+body { margin: 0; background: #f9f9f9; }
+.app { display: flex; height: 100vh; }
+
+/* BIKE VIEW */
+.bike-design {
+  flex: 0 0 40%;
+  background: #f0f0f0;
+  padding: 12px;
+  border-right: 2px solid #ccc;
+}
+
+.bike-visual {
+  position: relative;
+  height: 340px;
+  background: #ddd;
+  border: 2px dashed #aaa;
+  overflow: hidden;
+}
+
+.bike-visual img {
+  max-width: 100%;
+  max-height: 100%;
+  pointer-events: none;
+}
+
+.component-label,
+.text-box {
+  position: absolute;
+  background: white;
+  border: 1px solid #333;
+  padding: 4px 6px;
+  font-size: 12px;
+  cursor: move;
+  user-select: none;
+}
+
+svg {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* ADMIN */
+.admin-panel {
+  flex: 0 0 60%;
+  padding: 12px;
+  overflow-y: auto;
+}
+
+.big-btn {
+  width: 100%;
+  padding: 10px;
+  font-size: 16px;
+  margin-bottom: 6px;
+}
+
+.component-item {
+  border: 1px solid #ccc;
+  padding: 6px;
+  margin-bottom: 4px;
+  background: white;
+  cursor: grab;
+}
+
+.section {
+  border: 1px solid #ddd;
+  padding: 10px;
+  margin-top: 10px;
+  background: white;
+}
+
+.total { font-weight: bold; }
+</style>
+</head>
+
+<body>
+
+<div class="app">
+
+<!-- BIKE VIEW -->
+<section class="bike-design">
+  <h2>Vista de la bicicleta</h2>
+
+  <div class="bike-visual" id="bikeVisual"
+       ondragover="allowDrop(event)"
+       ondrop="dropComponent(event)">
+    <svg id="arrowLayer"></svg>
+  </div>
+
+  <small>Guardado automático activo (LocalStorage)</small>
+</section>
+
+<!-- ADMIN -->
+<section class="admin-panel">
+
+  <button class="big-btn" onclick="exportConfig()">💾 Exportar JSON</button>
+  <input type="file" accept=".json" onchange="importConfig(event)">
+
+  <button class="big-btn" onclick="exportImage()">📸 Exportar imagen</button>
+
+  <h2>📷 Imagen bicicleta</h2>
+  <input type="file" accept=".png,.svg" onchange="loadBikeImage(event)">
+
+  <h2>✏️ Anotaciones</h2>
+  <button onclick="startArrow()">➤ Crear flecha</button>
+  <button onclick="createTextBox()">📝 Crear texto</button>
+
+  <h2>➕ Crear componente</h2>
+  <input id="compName" placeholder="Nombre">
+  <input id="compPrice" type="number" placeholder="Precio €">
+  <button class="big-btn" onclick="createComponent()">CREAR</button>
+
+  <h2>Componentes</h2>
+  <div id="componentsList"></div>
+
+  <div class="section">
+    <h3>Total</h3>
+    <div class="total" id="totalPrice">0 €</div>
+  </div>
+
+</section>
+</div>
+
+<script>
+const STORAGE_KEY = "bike_builder_autosave";
+
+/* =================== ESTADO =================== */
+const state = {
+  components: [],
+  arrows: [],
+  bikeImage: null
+};
+
+/* =================== LOCAL STORAGE =================== */
+function saveLocal() {
+  const data = {
+    state,
+    labels: [...document.querySelectorAll(".component-label")].map(l => ({
+      text: l.textContent, x: l.style.left, y: l.style.top
+    })),
+    texts: [...document.querySelectorAll(".text-box")].map(t => ({
+      text: t.textContent, x: t.style.left, y: t.style.top
+    }))
+  };
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+}
+
+function loadLocal() {
+  const raw = localStorage.getItem(STORAGE_KEY);
+  if (!raw) return;
+  const data = JSON.parse(raw);
+
+  state.components = data.state.components || [];
+  state.arrows = data.state.arrows || [];
+  state.bikeImage = data.state.bikeImage || null;
+
+  renderComponents();
+  updateTotal();
+
+  if (state.bikeImage) {
+    const img = document.createElement("img");
+    img.src = state.bikeImage;
+    bikeVisual.appendChild(img);
+  }
+
+  data.labels?.forEach(l => {
+    const d = document.createElement("div");
+    d.className = "component-label";
+    d.textContent = l.text;
+    d.style.left = l.x;
+    d.style.top = l.y;
+    makeMovable(d);
+    bikeVisual.appendChild(d);
+  });
+
+  data.texts?.forEach(t => {
+    const d = document.createElement("div");
+    d.className = "text-box";
+    d.textContent = t.text;
+    d.style.left = t.x;
+    d.style.top = t.y;
+    makeMovable(d);
+    bikeVisual.appendChild(d);
+  });
+
+  state.arrows.forEach(a => drawArrow(a.x1, a.y1, a.x2, a.y2));
+}
+
+/* =================== COMPONENTES =================== */
+function createComponent() {
+  if (!compName.value || !compPrice.value) return;
+  state.components.push({ name: compName.value, price: +compPrice.value });
+  compName.value = compPrice.value = "";
+  renderComponents();
+  updateTotal();
+  saveLocal();
+}
+
+function editComponent(i) {
+  const c = state.components[i];
+  const n = prompt("Nombre:", c.name);
+  const p = prompt("Precio:", c.price);
+  if (n && !isNaN(p)) {
+    c.name = n;
+    c.price = +p;
+    renderComponents();
+    updateTotal();
+    saveLocal();
+  }
+}
+
+function deleteComponent(i) {
+  if (!confirm("¿Eliminar componente?")) return;
+  state.components.splice(i, 1);
+  renderComponents();
+  updateTotal();
+  saveLocal();
+}
+
+function renderComponents() {
+  componentsList.innerHTML = "";
+  state.components.forEach((c, i) => {
+    const d = document.createElement("div");
+    d.className = "component-item";
+    d.draggable = true;
+    d.ondragstart = e => e.dataTransfer.setData("i", i);
+    d.innerHTML = `
+      <strong>${c.name}</strong> – ${c.price} €
+      <br>
+      <button onclick="editComponent(${i})">Editar</button>
+      <button onclick="deleteComponent(${i})">Eliminar</button>
+    `;
+    componentsList.appendChild(d);
+  });
+}
+
+/* =================== DRAG & DROP =================== */
+function allowDrop(e) { e.preventDefault(); }
+
+function dropComponent(e) {
+  e.preventDefault();
+  const i = e.dataTransfer.getData("i");
+  if (!state.components[i]) return;
+
+  const r = bikeVisual.getBoundingClientRect();
+  const d = document.createElement("div");
+  d.className = "component-label";
+  d.textContent = state.components[i].name;
+  d.style.left = (e.clientX - r.left) + "px";
+  d.style.top = (e.clientY - r.top) + "px";
+  makeMovable(d);
+  bikeVisual.appendChild(d);
+  saveLocal();
+}
+
+/* =================== MOVIBLE =================== */
+function makeMovable(el) {
+  el.onmousedown = e => {
+    const ox = e.offsetX, oy = e.offsetY;
+    document.onmousemove = ev => {
+      const r = bikeVisual.getBoundingClientRect();
+      el.style.left = (ev.clientX - r.left - ox) + "px";
+      el.style.top = (ev.clientY - r.top - oy) + "px";
+    };
+    document.onmouseup = () => {
+      document.onmousemove = null;
+      saveLocal();
+    };
+  };
+}
+
+/* =================== TEXTO =================== */
+function createTextBox() {
+  const t = prompt("Texto:");
+  if (!t) return;
+  const d = document.createElement("div");
+  d.className = "text-box";
+  d.textContent = t;
+  d.style.left = "10px";
+  d.style.top = "10px";
+  makeMovable(d);
+  bikeVisual.appendChild(d);
+  saveLocal();
+}
+
+/* =================== FLECHAS =================== */
+let arrowMode = false, arrowStart = null;
+
+function startArrow() {
+  arrowMode = true;
+  arrowStart = null;
+  bikeVisual.style.cursor = "crosshair";
+}
+
+bikeVisual.addEventListener("click", e => {
+  if (!arrowMode) return;
+  const r = bikeVisual.getBoundingClientRect();
+  const x = e.clientX - r.left;
+  const y = e.clientY - r.top;
+  if (!arrowStart) arrowStart = { x, y };
+  else {
+    drawArrow(arrowStart.x, arrowStart.y, x, y);
+    arrowMode = false;
+    arrowStart = null;
+    bikeVisual.style.cursor = "default";
+    saveLocal();
+  }
+});
+
+function drawArrow(x1, y1, x2, y2) {
+  const svg = arrowLayer;
+  if (!svg.querySelector("defs")) {
+    svg.innerHTML = `
+      <defs>
+        <marker id="arrow" markerWidth="10" markerHeight="10"
+          refX="10" refY="5" orient="auto">
+          <path d="M0,0 L10,5 L0,10 Z" fill="black"/>
+        </marker>
+      </defs>`;
+  }
+  const l = document.createElementNS("http://www.w3.org/2000/svg", "line");
+  l.setAttribute("x1", x1);
+  l.setAttribute("y1", y1);
+  l.setAttribute("x2", x2);
+  l.setAttribute("y2", y2);
+  l.setAttribute("stroke", "black");
+  l.setAttribute("stroke-width", "2");
+  l.setAttribute("marker-end", "url(#arrow)");
+  svg.appendChild(l);
+  state.arrows.push({ x1, y1, x2, y2 });
+}
+
+/* =================== IMAGEN =================== */
+function loadBikeImage(e) {
+  const f = e.target.files[0];
+  if (!f) return;
+  const r = new FileReader();
+  r.onload = () => {
+    bikeVisual.innerHTML = '<svg id="arrowLayer"></svg>';
+    const img = document.createElement("img");
+    img.src = r.result;
+    bikeVisual.appendChild(img);
+    state.bikeImage = r.result;
+    saveLocal();
+  };
+  r.readAsDataURL(f);
+}
+
+/* =================== TOTAL =================== */
+function updateTotal() {
+  totalPrice.textContent =
+    state.components.reduce((s, c) => s + c.price, 0) + " €";
+}
+
+/* =================== JSON =================== */
+function exportConfig() {
+  const cfg = JSON.parse(localStorage.getItem(STORAGE_KEY));
+  const b = new Blob([JSON.stringify(cfg, null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(b);
+  a.download = "bike-config.json";
+  a.click();
+}
+
+function importConfig(e) {
+  const f = e.target.files[0];
+  if (!f) return;
+  const r = new FileReader();
+  r.onload = () => {
+    localStorage.setItem(STORAGE_KEY, r.result);
+    location.reload();
+  };
+  r.readAsText(f);
+}
+
+/* =================== EXPORT IMAGE =================== */
+function exportImage() {
+  const v = bikeVisual.cloneNode(true);
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="${bikeVisual.offsetWidth}" height="${bikeVisual.offsetHeight}">
+      <foreignObject width="100%" height="100%">
+        ${new XMLSerializer().serializeToString(v)}
+      </foreignObject>
+    </svg>`;
+  const img = new Image();
+  const blob = new Blob([svg], { type: "image/svg+xml" });
+  const url = URL.createObjectURL(blob);
+  img.onload = () => {
+    const c = document.createElement("canvas");
+    c.width = bikeVisual.offsetWidth;
+    c.height = bikeVisual.offsetHeight;
+    c.getContext("2d").drawImage(img, 0, 0);
+    const a = document.createElement("a");
+    a.download = "bike-config.png";
+    a.href = c.toDataURL("image/png");
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+  img.src = url;
+}
+
+/* =================== INIT =================== */
+loadLocal();
+</script>
+
+</body>
+</html>
